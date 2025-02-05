@@ -1,0 +1,964 @@
+diff --git a/contest/grader/grader.cpp b/contest/grader/grader.cpp
+index 7c309179..207875d3 100644
+--- a/contest/grader/grader.cpp
++++ b/contest/grader/grader.cpp
+@@ -245,7 +245,10 @@ int main(int argc, char* argv[]) {
+     std::cout << sb.as_cslice().c_str();
+     std::exit(2);
+   });
+-  std::string tests_dir = "tests/";
++  std::string tests_dir = "/Users/abionics/Downloads/ton/tests/";
++  // std::string tests_dir = "/Users/abionics/Downloads/ton/tests/../../test-202/";
++  // std::string tests_dir = "/Users/abionics/Downloads/ton/tests/../../test-076/";
++  // std::string tests_dir = "/Users/abionics/Downloads/ton/tests/../../test-xxx/";
+   p.add_option('d', "tests", "directory with tests (default: tests/)",
+                [&](td::Slice arg) { tests_dir = arg.str() + "/"; });
+   td::uint32 threads = 8;
+diff --git a/contest/solution/contest-validate-query.cpp b/contest/solution/contest-validate-query.cpp
+index 3559f64d..b0f0a794 100644
+--- a/contest/solution/contest-validate-query.cpp
++++ b/contest/solution/contest-validate-query.cpp
+@@ -4485,8 +4485,9 @@ std::unique_ptr<block::Account> ContestValidateQuery::unpack_account(td::ConstBi
+  *
+  * @returns True if the transaction is valid, false otherwise.
+  */
+-bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::LogicalTime lt, Ref<vm::Cell> trans_root,
+-                                                 bool is_first, bool is_last) {
++bool ContestValidateQuery::check_one_transaction(
++  block::Account& account, td::uint16 tx_count, LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first, bool is_last
++) {
+   LOG(DEBUG) << "checking transaction " << lt << " of account " << account.addr.to_hex();
+   const StdSmcAddress& addr = account.addr;
+   block::gen::Transaction::Record trans;
+@@ -4849,7 +4850,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
+                                     << addr.to_hex());
+     }
+   }
+-  if (!trs->prepare_compute_phase(compute_phase_cfg_)) {
++  if (!trs->prepare_compute_phase(compute_phase_cfg_, tx_count)) {
+     return reject_query(PSTRING() << "cannot re-create compute phase of transaction " << lt << " for smart contract "
+                                   << addr.to_hex());
+   }
+@@ -4873,7 +4874,7 @@ bool ContestValidateQuery::check_one_transaction(block::Account& account, ton::L
+     return reject_query(PSTRING() << "cannot re-create bounce phase of  transaction " << lt << " for smart contract "
+                                   << addr.to_hex());
+   }
+-  if (!trs->serialize()) {
++  if (!trs->serialize(tx_count)) {
+     return reject_query(PSTRING() << "cannot re-create the serialization of  transaction " << lt
+                                   << " for smart contract " << addr.to_hex());
+   }
+@@ -4988,15 +4989,18 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
+   vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(acc_blk.transactions), 64,
+                                      block::tlb::aug_AccountTransactions};
+   td::BitArray<64> min_trans, max_trans;
++  td::uint16 tx_count = 0;
++  for (const auto& _ : trans_dict) {
++    tx_count++;
++  }
+   CHECK(trans_dict.get_minmax_key(min_trans).not_null() && trans_dict.get_minmax_key(max_trans, true).not_null());
+   ton::LogicalTime min_trans_lt = min_trans.to_ulong(), max_trans_lt = max_trans.to_ulong();
+-  if (!trans_dict.check_for_each_extra([this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value,
+-                                                                                    Ref<vm::CellSlice> extra,
+-                                                                                    td::ConstBitPtr key, int key_len) {
++  if (!trans_dict.check_for_each_extra([this, &account, tx_count, min_trans_lt, max_trans_lt](
++    Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len) {
+         CHECK(key_len == 64);
+-        ton::LogicalTime lt = key.get_uint(64);
++        LogicalTime lt = key.get_uint(64);
+         extra.clear();
+-        return check_one_transaction(account, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
++        return check_one_transaction(account, tx_count, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
+       })) {
+     return reject_query("at least one Transaction of account "s + acc_addr.to_hex() + " is invalid");
+   }
+@@ -5068,6 +5072,7 @@ bool ContestValidateQuery::check_account_transactions(const StdSmcAddress& acc_a
+  * @returns True if all transactions pass the check, False otherwise.
+  */
+ bool ContestValidateQuery::check_transactions() {
++  vm::CellStorageStat::clear_cache();
+   LOG(INFO) << "checking all transactions";
+   ns_.account_dict_ =
+       std::make_unique<vm::AugmentedDictionary>(ps_.account_dict_->get_root(), 256, block::tlb::aug_ShardAccounts);
+diff --git a/contest/solution/contest-validate-query.hpp b/contest/solution/contest-validate-query.hpp
+index 7a43c244..9a785938 100644
+--- a/contest/solution/contest-validate-query.hpp
++++ b/contest/solution/contest-validate-query.hpp
+@@ -322,8 +322,9 @@ class ContestValidateQuery : public td::actor::Actor {
+   bool check_in_queue();
+   std::unique_ptr<block::Account> make_account_from(td::ConstBitPtr addr, Ref<vm::CellSlice> account);
+   std::unique_ptr<block::Account> unpack_account(td::ConstBitPtr addr);
+-  bool check_one_transaction(block::Account& account, LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first,
+-                             bool is_last);
++  bool check_one_transaction(
++    block::Account& account, td::uint16 tx_count, LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first, bool is_last
++  );
+   bool check_account_transactions(const StdSmcAddress& acc_addr, Ref<vm::CellSlice> acc_tr);
+   bool check_transactions();
+   bool check_message_processing_order();
+diff --git a/crypto/block/transaction.cpp b/crypto/block/transaction.cpp
+index a32bad52..49351fae 100644
+--- a/crypto/block/transaction.cpp
++++ b/crypto/block/transaction.cpp
+@@ -781,16 +781,16 @@ bool Transaction::unpack_input_msg(bool ihr_delivered, const ActionPhaseConfig*
+       in_msg_type = 2;
+       in_msg_extern = true;
+       // compute forwarding fees for this external message
+-      vm::CellStorageStat sstat;                                     // for message size
+-      auto cell_info = sstat.compute_used_storage(cs).move_as_ok();  // message body
+-      sstat.bits -= cs.size();                                       // bits in the root cells are free
+-      sstat.cells--;                                                 // the root cell itself is not counted as a cell
++      vm::CellStorageStat sstat;                                            // for message size
++      auto max_merkle_depth = sstat.compute_used_storage(cs).move_as_ok();  // message body
++      sstat.bits -= cs.size();                                              // bits in the root cells are free
++      sstat.cells--;                                                        // the root cell itself is not counted as a cell
+       LOG(DEBUG) << "storage paid for a message: " << sstat.cells << " cells, " << sstat.bits << " bits";
+       if (sstat.bits > cfg->size_limits.max_msg_bits || sstat.cells > cfg->size_limits.max_msg_cells) {
+         LOG(DEBUG) << "inbound external message too large, invalid";
+         return false;
+       }
+-      if (cell_info.max_merkle_depth > max_allowed_merkle_depth) {
++      if (max_merkle_depth > max_allowed_merkle_depth) {
+         LOG(DEBUG) << "inbound external message has too big merkle depth, invalid";
+         return false;
+       }
+@@ -1386,7 +1386,9 @@ int output_actions_count(Ref<vm::Cell> list) {
+  *
+  * @returns True if the unpacking is successful, false otherwise.
+  */
+-bool Transaction::unpack_msg_state(const ComputePhaseConfig& cfg, bool lib_only, bool forbid_public_libs) {
++bool Transaction::unpack_msg_state(
++  const ComputePhaseConfig& cfg, td::uint16 tx_count, bool lib_only, bool forbid_public_libs
++) {
+   block::gen::StateInit::Record state;
+   if (in_msg_state.is_null() || !tlb::unpack_cell(in_msg_state, state)) {
+     LOG(ERROR) << "cannot unpack StateInit from an inbound message";
+@@ -1418,7 +1420,7 @@ bool Transaction::unpack_msg_state(const ComputePhaseConfig& cfg, bool lib_only,
+   if (forbid_public_libs) {
+     size_limits.max_acc_public_libraries = 0;
+   }
+-  auto S = check_state_limits(size_limits, false);
++  auto S = check_state_limits(size_limits, tx_count, false);
+   if (S.is_error()) {
+     LOG(DEBUG) << "Cannot unpack msg state: " << S.move_as_error();
+     new_code = old_code;
+@@ -1550,7 +1552,7 @@ bool Transaction::run_precompiled_contract(const ComputePhaseConfig& cfg, precom
+  *
+  * @returns True if the compute phase was successfully prepared and executed, false otherwise.
+  */
+-bool Transaction::prepare_compute_phase(const ComputePhaseConfig& cfg) {
++bool Transaction::prepare_compute_phase(const ComputePhaseConfig& cfg, td::uint16 tx_count) {
+   // TODO: add more skip verifications + sometimes use state from in_msg to re-activate
+   // ...
+   compute_phase = std::make_unique<ComputePhase>();
+@@ -1596,7 +1598,7 @@ bool Transaction::prepare_compute_phase(const ComputePhaseConfig& cfg) {
+     use_msg_state = true;
+     bool forbid_public_libs =
+         acc_status == Account::acc_uninit && account.is_masterchain();  // Forbid for deploying, allow for unfreezing
+-    if (!(unpack_msg_state(cfg, false, forbid_public_libs) && account.check_split_depth(new_split_depth))) {
++    if (!(unpack_msg_state(cfg, tx_count, false, forbid_public_libs) && account.check_split_depth(new_split_depth))) {
+       LOG(DEBUG) << "cannot unpack in_msg_state, or it has bad split_depth; cannot init account state";
+       cp.skip_reason = ComputePhase::sk_bad_state;
+       return true;
+@@ -1619,7 +1621,7 @@ bool Transaction::prepare_compute_phase(const ComputePhaseConfig& cfg) {
+         return true;
+       }
+     }
+-    unpack_msg_state(cfg, true);  // use only libraries
++    unpack_msg_state(cfg, 0, true);  // use only libraries
+   }
+   if (!cfg.allow_external_unfreeze) {
+     if (in_msg_extern && in_msg_state.not_null() && account.addr != in_msg_state->get_hash().bits()) {
+@@ -1800,7 +1802,7 @@ bool Transaction::prepare_action_phase(const ActionPhaseConfig& cfg) {
+     if (account.is_special) {
+       return true;
+     }
+-    auto S = check_state_limits(cfg.size_limits);
++    auto S = check_state_limits(cfg.size_limits, 0);
+     if (S.is_error()) {
+       // Rollback changes to state, fail action phase
+       LOG(INFO) << "Account state size exceeded limits: " << S.move_as_error();
+@@ -2050,8 +2052,8 @@ int Transaction::try_action_change_library(vm::CellSlice& cs, ActionPhase& ap, c
+         return 41;
+       }
+       vm::CellStorageStat sstat;
+-      auto cell_info = sstat.compute_used_storage(lib_ref).move_as_ok();
+-      if (sstat.cells > cfg.size_limits.max_library_cells || cell_info.max_merkle_depth > max_allowed_merkle_depth) {
++      auto max_merkle_depth = sstat.compute_used_storage(lib_ref).move_as_ok();
++      if (sstat.cells > cfg.size_limits.max_library_cells || max_merkle_depth > max_allowed_merkle_depth) {
+         return 43;
+       }
+       vm::CellBuilder cb;
+@@ -2471,17 +2473,24 @@ int Transaction::try_action_send_msg(const vm::CellSlice& cs0, ActionPhase& ap,
+   vm::CellStorageStat sstat(max_cells);  // for message size
+   // preliminary storage estimation of the resulting message
+   unsigned max_merkle_depth = 0;
+-  auto add_used_storage = [&](const auto& x, unsigned skip_root_count) -> td::Status {
++  auto add_used_storage_cs = [&](const auto& x, bool skip_root) -> td::Status {
+     if (x.not_null()) {
+-      TRY_RESULT(res, sstat.add_used_storage(x, true, skip_root_count));
+-      max_merkle_depth = std::max(max_merkle_depth, res.max_merkle_depth);
++      TRY_RESULT(child_max_merkle_depth, sstat.add_used_storage(x, true, skip_root ? 3 : 0));
++      max_merkle_depth = std::max(max_merkle_depth, child_max_merkle_depth);
+     }
+     return td::Status::OK();
+   };
+-  add_used_storage(msg.init, 3);  // message init
+-  add_used_storage(msg.body, 3);  // message body (the root cell itself is not counted)
++  auto add_used_storage_cell = [&](const auto& x) -> td::Status {
++    if (x.not_null()) {
++      TRY_RESULT(child_max_merkle_depth, sstat.add_used_storage(x));
++      max_merkle_depth = std::max(max_merkle_depth, child_max_merkle_depth);
++    }
++    return td::Status::OK();
++  };
++  add_used_storage_cs(msg.init, true);  // message init
++  add_used_storage_cs(msg.body, true);  // message body (the root cell itself is not counted)
+   if (!ext_msg) {
+-    add_used_storage(info.value->prefetch_ref(), 0);
++    add_used_storage_cell(info.value->prefetch_ref());
+   }
+   auto collect_fine = [&] {
+     if (cfg.action_fine_enabled && !account.is_special) {
+@@ -2850,7 +2859,9 @@ static td::uint32 get_public_libraries_diff_count(const td::Ref<vm::Cell>& old_l
+  *          - If the state limits are within the allowed range, returns OK.
+  *          - If the state limits exceed the maximum allowed range, returns an error.
+  */
+-td::Status Transaction::check_state_limits(const SizeLimitsConfig& size_limits, bool update_storage_stat) {
++td::Status Transaction::check_state_limits(
++  const SizeLimitsConfig& size_limits, td::uint16 tx_count, bool update_storage_stat
++) {
+   auto cell_equal = [](const td::Ref<vm::Cell>& a, const td::Ref<vm::Cell>& b) -> bool {
+     if (a.is_null()) {
+       return b.is_null();
+@@ -2864,27 +2875,43 @@ td::Status Transaction::check_state_limits(const SizeLimitsConfig& size_limits,
+       cell_equal(account.library, new_library)) {
+     return td::Status::OK();
+   }
+-  vm::CellStorageStat storage_stat;
+-  storage_stat.limit_cells = size_limits.max_acc_state_cells;
+-  storage_stat.limit_bits = size_limits.max_acc_state_bits;
++  size_t capacity = account.storage_stat.seen.capacity();
++  capacity = capacity > 0 ? 1.2 * capacity : 38;  // 38 = 1.2 * 31
++  vm::CellStorageStat storage_stat(size_limits.max_acc_state_cells, size_limits.max_acc_state_bits, capacity);
++  // vm::CellStorageStat original(size_limits.max_acc_state_cells, size_limits.max_acc_state_bits, capacity);
+   {
+     TD_PERF_COUNTER(transaction_storage_stat_a);
+     td::Timer timer;
+-    auto add_used_storage = [&](const td::Ref<vm::Cell>& cell) -> td::Status {
++    const bool use_cache = tx_count > 1;
++    auto add_used_storage = [&](const Ref<vm::Cell>& cell) -> td::Status {
+       if (cell.not_null()) {
+-        TRY_RESULT(res, storage_stat.add_used_storage(cell));
+-        if (res.max_merkle_depth > max_allowed_merkle_depth) {
++        // TRY_RESULT(_, original.add_used_storage(cell));
++        TRY_RESULT(max_merkle_depth, storage_stat.add_used_storage_fast(cell, use_cache));
++        if (max_merkle_depth > max_allowed_merkle_depth) {
+           return td::Status::Error("too big merkle depth");
+         }
++        // if (original.bits != storage_stat.bits || original.cells != storage_stat.cells) {
++        //   std::cout << original.bits << " " << original.cells << " | " << storage_stat.bits << " " << storage_stat.cells << std::endl;
++        // } else {
++        //   std::cout << "ok\n";
++        // }
+       }
+       return td::Status::OK();
+     };
++    td::Timer timer1;
+     TRY_STATUS(add_used_storage(new_code));
++    if (timer1.elapsed() > 0.001) {
++      LOG(ERROR) << "CODE used storage took " << timer.elapsed() << "s";
++    }
++    td::Timer timer2;
+     TRY_STATUS(add_used_storage(new_data));
+-    TRY_STATUS(add_used_storage(new_library));
+-    if (timer.elapsed() > 0.1) {
+-      LOG(INFO) << "Compute used storage took " << timer.elapsed() << "s";
++    if (timer2.elapsed() > 0.01) {
++      LOG(ERROR) << "DATA used storage took " << timer.elapsed() << "s";
+     }
++    TRY_STATUS(add_used_storage(new_library));
++    // if (timer.elapsed() > 0.01) {
++    //   LOG(ERROR) << "Compute used storage took " << timer.elapsed() << "s " << cell_equal(account.code, new_code) << " " << cell_equal(account.data, new_data);
++    // }
+   }
+ 
+   if (acc_status == Account::acc_active) {
+@@ -3093,7 +3120,7 @@ namespace transaction {
+  *
+  * @returns True if the state computation is successful, false otherwise.
+  */
+-bool Transaction::compute_state() {
++bool Transaction::compute_state(td::uint16 tx_count) {
+   if (new_total_state.not_null()) {
+     return true;
+   }
+@@ -3134,6 +3161,7 @@ bool Transaction::compute_state() {
+         std::cerr << "with hash " << frozen_hash.to_hex() << std::endl;
+       }
+     }
++    // todo rm?
+     new_code.clear();
+     new_data.clear();
+     new_library.clear();
+@@ -3169,10 +3197,11 @@ bool Transaction::compute_state() {
+   } else {
+     TD_PERF_COUNTER(transaction_storage_stat_b);
+     td::Timer timer;
+-    stats.add_used_storage(Ref<vm::Cell>(storage)).ensure();
+-    if (timer.elapsed() > 0.1) {
+-      LOG(INFO) << "Compute used storage took " << timer.elapsed() << "s";
+-    }
++    const bool use_cache = tx_count > 1;
++    stats.add_used_storage_fast(Ref<vm::Cell>(storage), use_cache).ensure();
++//    if (timer.elapsed() > 0.1) {
++    // LOG(ERROR) << "Compute used storage took " << timer.elapsed() << "s";
++//    }
+   }
+   CHECK(cb.store_long_bool(1, 1)                       // account$1
+         && cb.append_cellslice_bool(account.my_addr)   // addr:MsgAddressInt
+@@ -3203,11 +3232,11 @@ bool Transaction::compute_state() {
+  *
+  * @returns True if the serialization is successful, False otherwise.
+  */
+-bool Transaction::serialize() {
++bool Transaction::serialize(td::uint16 tx_count) {
+   if (root.not_null()) {
+     return true;
+   }
+-  if (!compute_state()) {
++  if (!compute_state(tx_count)) {
+     return false;
+   }
+   vm::Dictionary dict{15};
+diff --git a/crypto/block/transaction.h b/crypto/block/transaction.h
+index 20d7cb29..54927353 100644
+--- a/crypto/block/transaction.h
++++ b/crypto/block/transaction.h
+@@ -384,12 +384,14 @@ struct Transaction {
+   Ref<vm::Stack> prepare_vm_stack(ComputePhase& cp);
+   std::vector<Ref<vm::Cell>> compute_vm_libraries(const ComputePhaseConfig& cfg);
+   bool run_precompiled_contract(const ComputePhaseConfig& cfg, precompiled::PrecompiledSmartContract& precompiled);
+-  bool prepare_compute_phase(const ComputePhaseConfig& cfg);
++  bool prepare_compute_phase(const ComputePhaseConfig& cfg, td::uint16 tx_count = 0);
+   bool prepare_action_phase(const ActionPhaseConfig& cfg);
+-  td::Status check_state_limits(const SizeLimitsConfig& size_limits, bool update_storage_stat = true);
++  td::Status check_state_limits(
++    const SizeLimitsConfig& size_limits, td::uint16 tx_count, bool update_storage_stat = true
++  );
+   bool prepare_bounce_phase(const ActionPhaseConfig& cfg);
+-  bool compute_state();
+-  bool serialize();
++  bool compute_state(td::uint16 tx_count);
++  bool serialize(td::uint16 tx_count = 0);
+   td::uint64 gas_used() const {
+     return compute_phase ? compute_phase->gas_used : 0;
+   }
+@@ -418,7 +420,9 @@ struct Transaction {
+   bool serialize_compute_phase(vm::CellBuilder& cb);
+   bool serialize_action_phase(vm::CellBuilder& cb);
+   bool serialize_bounce_phase(vm::CellBuilder& cb);
+-  bool unpack_msg_state(const ComputePhaseConfig& cfg, bool lib_only = false, bool forbid_public_libs = false);
++  bool unpack_msg_state(
++    const ComputePhaseConfig& cfg, td::uint16 tx_count, bool lib_only = false, bool forbid_public_libs = false
++  );
+ };
+ }  // namespace transaction
+ 
+diff --git a/crypto/vm/boc.cpp b/crypto/vm/boc.cpp
+index 7ec8bdd1..b1605a52 100644
+--- a/crypto/vm/boc.cpp
++++ b/crypto/vm/boc.cpp
+@@ -1049,40 +1049,35 @@ td::Status std_boc_serialize_to_file(Ref<Cell> root, td::FileFd& fd, int mode,
+  * 
+  */
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::compute_used_storage(Ref<vm::CellSlice> cs_ref, bool kill_dup,
+-                                                                            unsigned skip_count_root) {
++td::Result<td::uint32> CellStorageStat::compute_used_storage(Ref<vm::CellSlice> cs_ref, bool kill_dup, unsigned skip_count_root) {
+   clear();
+   TRY_RESULT(res, add_used_storage(std::move(cs_ref), kill_dup, skip_count_root));
+   clear_seen();
+   return res;
+ }
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::compute_used_storage(const CellSlice& cs, bool kill_dup,
+-                                                                            unsigned skip_count_root) {
++td::Result<td::uint32> CellStorageStat::compute_used_storage(const CellSlice& cs, bool kill_dup, unsigned skip_count_root) {
+   clear();
+   TRY_RESULT(res, add_used_storage(cs, kill_dup, skip_count_root));
+   clear_seen();
+   return res;
+ }
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::compute_used_storage(CellSlice&& cs, bool kill_dup,
+-                                                                            unsigned skip_count_root) {
++td::Result<td::uint32> CellStorageStat::compute_used_storage(CellSlice&& cs, bool kill_dup, unsigned skip_count_root) {
+   clear();
+   TRY_RESULT(res, add_used_storage(std::move(cs), kill_dup, skip_count_root));
+   clear_seen();
+   return res;
+ }
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::compute_used_storage(Ref<vm::Cell> cell, bool kill_dup,
+-                                                                            unsigned skip_count_root) {
++td::Result<td::uint32> CellStorageStat::compute_used_storage(Ref<vm::Cell> cell, bool kill_dup, unsigned skip_count_root) {
+   clear();
+   TRY_RESULT(res, add_used_storage(std::move(cell), kill_dup, skip_count_root));
+   clear_seen();
+   return res;
+ }
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(Ref<vm::CellSlice> cs_ref, bool kill_dup,
+-                                                                        unsigned skip_count_root) {
++td::Result<td::uint32> CellStorageStat::add_used_storage(Ref<vm::CellSlice> cs_ref, bool kill_dup, unsigned skip_count_root) {
+   if (cs_ref->is_unique()) {
+     return add_used_storage(std::move(cs_ref.unique_write()), kill_dup, skip_count_root);
+   } else {
+@@ -1090,8 +1085,7 @@ td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(Ref<vm::
+   }
+ }
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(const CellSlice& cs, bool kill_dup,
+-                                                                        unsigned skip_count_root) {
++td::Result<td::uint32> CellStorageStat::add_used_storage(const CellSlice& cs, bool kill_dup, unsigned skip_count_root) {
+   if (!(skip_count_root & 1)) {
+     ++cells;
+     if (cells > limit_cells) {
+@@ -1104,20 +1098,19 @@ td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(const Ce
+       return td::Status::Error("too many bits");
+     }
+   }
+-  CellInfo res;
++  td::uint32 max_merkle_depth = 0;
+   for (unsigned i = 0; i < cs.size_refs(); i++) {
+-    TRY_RESULT(child, add_used_storage(cs.prefetch_ref(i), kill_dup));
+-    res.max_merkle_depth = std::max(res.max_merkle_depth, child.max_merkle_depth);
++    TRY_RESULT(child_max_merkle_depth, add_used_storage(cs.prefetch_ref(i), kill_dup));
++    max_merkle_depth = std::max(max_merkle_depth, child_max_merkle_depth);
+   }
+   if (cs.special_type() == CellTraits::SpecialType::MerkleProof ||
+       cs.special_type() == CellTraits::SpecialType::MerkleUpdate) {
+-    ++res.max_merkle_depth;
++    ++max_merkle_depth;
+   }
+-  return res;
++  return max_merkle_depth;
+ }
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(CellSlice&& cs, bool kill_dup,
+-                                                                        unsigned skip_count_root) {
++td::Result<td::uint32> CellStorageStat::add_used_storage(CellSlice&& cs, bool kill_dup, unsigned skip_count_root) {
+   if (!(skip_count_root & 1)) {
+     ++cells;
+     if (cells > limit_cells) {
+@@ -1130,25 +1123,25 @@ td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(CellSlic
+       return td::Status::Error("too many bits");
+     }
+   }
+-  CellInfo res;
++  td::uint32 max_merkle_depth = 0;
+   while (cs.size_refs()) {
+-    TRY_RESULT(child, add_used_storage(cs.fetch_ref(), kill_dup));
+-    res.max_merkle_depth = std::max(res.max_merkle_depth, child.max_merkle_depth);
++    TRY_RESULT(child_max_merkle_depth, add_used_storage(cs.fetch_ref(), kill_dup));
++    max_merkle_depth = std::max(max_merkle_depth, child_max_merkle_depth);
+   }
+   if (cs.special_type() == CellTraits::SpecialType::MerkleProof ||
+       cs.special_type() == CellTraits::SpecialType::MerkleUpdate) {
+-    ++res.max_merkle_depth;
++    ++max_merkle_depth;
+   }
+-  return res;
++  return max_merkle_depth;
+ }
+ 
+-td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(Ref<vm::Cell> cell, bool kill_dup,
+-                                                                        unsigned skip_count_root) {
++
++td::Result<td::uint32> CellStorageStat::add_used_storage(Ref<Cell> cell, bool kill_dup, unsigned skip_count_root) {
+   if (cell.is_null()) {
+     return td::Status::Error("cell is null");
+   }
+   if (kill_dup) {
+-    auto ins = seen.emplace(cell->get_hash(), CellInfo{});
++    auto ins = seen.emplace(cell->get_hash(), 0);
+     if (!ins.second) {
+       return ins.first->second;
+     }
+@@ -1157,6 +1150,140 @@ td::Result<CellStorageStat::CellInfo> CellStorageStat::add_used_storage(Ref<vm::
+   return add_used_storage(std::move(cs), kill_dup, skip_count_root);
+ }
+ 
++td::Result<td::uint16> CellStorageStat::add_used_storage_fast(Ref<CellSlice> cs, bool skip_root) {
++  if (!skip_root) {
++    cells++;
++    bits += cs->size();
++    if (td::unlikely(cells > limit_cells)) {
++      return td::Status::Error("too many cells");
++    }
++    if (td::unlikely(bits > limit_bits)) {
++      return td::Status::Error("too many bits");
++    }
++  }
++
++  const auto type = cs->special_type();
++  const bool is_merkle = type == CellTraits::SpecialType::MerkleProof || type == CellTraits::SpecialType::MerkleUpdate;
++
++  td::uint16 max_merkle_depth = 0;
++  const auto refs_count = cs->size_refs();
++  for (unsigned i = 0; i < refs_count; i++) {
++    auto cell = cs->prefetch_ref(i);
++    TRY_RESULT(info, add_cell(cell, cell->get_hash(0)));
++    max_merkle_depth = std::max(max_merkle_depth, info->merkle_depth);
++  }
++  return max_merkle_depth + is_merkle;
++}
++
++td::Result<td::uint16> CellStorageStat::add_used_storage_fast(const Ref<Cell>& root, bool use_cache) {
++  auto hash = root->get_hash(0);
++  if (use_cache) {
++    TRY_RESULT(info, add_cell(root, hash));
++    return info->merkle_depth;
++  }
++  const auto& [it, inserted] = seen.emplace(hash, 0);
++  if (inserted) {
++    TRY_RESULT(max_merkle_depth, add_cell_no_cache(root));
++    return max_merkle_depth;
++  }
++  return it->second;
++}
++
++td::Result<CellStorageStat::CacheInfo*> CellStorageStat::add_cell(const Ref<Cell>& cell, const Cell::Hash& hash) {
++  const auto loaded_cell = cell->load_cell().move_as_ok();
++  const auto dc = loaded_cell.data_cell;
++
++  const auto& [_, newly_visited] = seen.emplace(hash, 0);
++  const auto total_cells = cell->get_total_cells();
++  const bool is_overflow = total_cells >= MAX_TOTAL_CELLS;
++  const bool in_cache = !is_overflow && cache.contains(hash);
++  if (!newly_visited) {
++    return in_cache ? cache.at(hash).get() : &OVERFLOW_INFO;
++  }
++
++  cells++;
++  bits += dc->size();
++  if (td::unlikely(cells > limit_cells)) {
++    return td::Status::Error("too many cells");
++  }
++  if (td::unlikely(bits > limit_bits)) {
++    return td::Status::Error("too many bits");
++  }
++  const auto type = dc->special_type();
++
++  if (is_overflow) {
++    TRY_STATUS(add_new_cell(dc, nullptr));
++    return &OVERFLOW_INFO;
++  }
++  CacheInfo* info = nullptr;
++  if (!in_cache) {
++    auto info_ptr = std::make_unique<CacheInfo>(total_cells);
++    info = info_ptr.get();
++    info->bits = dc->size();
++    if (type == CellTraits::SpecialType::MerkleProof || type == CellTraits::SpecialType::MerkleUpdate) {
++      info->merkle_depth++;
++    }
++    TRY_STATUS(add_new_cell(dc, info));
++    cache.emplace(hash, std::move(info_ptr));
++  } else {
++    info = cache.at(hash).get();
++    add_cached_cell(info);
++  }
++  return info;
++}
++
++td::Result<td::uint16> CellStorageStat::add_cell_no_cache(const Ref<Cell>& cell) {
++  const auto loaded_cell = cell->load_cell().move_as_ok();
++  const auto dc = loaded_cell.data_cell;
++
++  td::uint16 max_merkle_depth = 0;
++  const auto refs_count = dc->size_refs();
++  for (unsigned i = 0; i < refs_count; i++) {
++    auto ref = dc->get_ref(i);
++    auto ref_hash = ref->get_hash(0);
++    if (seen.emplace(ref_hash, 0).second) {
++      TRY_RESULT(merkle_depth, add_cell_no_cache(ref));
++      max_merkle_depth = std::max(max_merkle_depth, merkle_depth);
++    }
++  }
++
++  cells++;
++  bits += dc->size();
++  if (td::unlikely(cells > limit_cells)) {
++    return td::Status::Error("too many cells");
++  }
++  if (td::unlikely(bits > limit_bits)) {
++    return td::Status::Error("too many bits");
++  }
++
++  const auto type = dc->special_type();
++  const bool is_merkle = type == CellTraits::SpecialType::MerkleProof || type == CellTraits::SpecialType::MerkleUpdate;
++  return max_merkle_depth + is_merkle;
++}
++
++td::Result<bool> CellStorageStat::add_new_cell(const Ref<DataCell>& cell, CacheInfo* info) {
++  const auto refs_count = cell->size_refs();
++  for (unsigned i = 0; i < refs_count; i++) {
++    auto ref = cell->get_ref(i);
++    auto ref_hash = ref->get_hash(0);
++    TRY_RESULT(ref_info, add_cell(ref, ref_hash));
++    if (info != nullptr) {
++      info->merge(ref_info, ref_hash);
++    }
++  }
++  return true;
++}
++
++void CellStorageStat::add_cached_cell(CacheInfo* info) {
++  for (const auto& child_hash : info->children) {
++    if (seen.emplace(child_hash, info->merkle_depth).second) {
++      const auto* child = cache.at(child_hash).get();
++      bits += child->bits;
++      cells++;
++    }
++  }
++}
++
+ void NewCellStorageStat::add_cell(Ref<Cell> cell) {
+   dfs(std::move(cell), true, false);
+ }
+diff --git a/crypto/vm/boc.h b/crypto/vm/boc.h
+index 8adf240f..c4010496 100644
+--- a/crypto/vm/boc.h
++++ b/crypto/vm/boc.h
+@@ -31,6 +31,8 @@
+ #include "td/utils/Timer.h"
+ #include "td/utils/port/FileFd.h"
+ 
++#include "absl/container/flat_hash_map.h"
++
+ namespace vm {
+ using td::Ref;
+ 
+@@ -111,43 +113,84 @@ class NewCellStorageStat {
+ };
+ 
+ struct CellStorageStat {
+-  unsigned long long cells;
+-  unsigned long long bits;
+-  unsigned long long public_cells;
+-  struct CellInfo {
+-    td::uint32 max_merkle_depth = 0;
++  static constexpr td::uint16 MAX_TOTAL_CELLS = 8;
++
++  struct CacheInfo {
++    td::uint16 merkle_depth = 0;
++    td::uint16 total_cells = 0;
++    td::uint32 bits = 0;
++    absl::flat_hash_set<Cell::Hash> children{};
++
++    explicit CacheInfo(td::uint16 total_cells) : total_cells(total_cells) {}
++
++    bool overflow() const {
++      return total_cells >= MAX_TOTAL_CELLS;
++    }
++
++    void merge(CacheInfo* other, const Cell::Hash& hash) {
++      if (other->overflow()) {
++        total_cells = MAX_TOTAL_CELLS;
++        return;
++      }
++      total_cells += other->total_cells;
++      merkle_depth = std::max(merkle_depth, other->merkle_depth);
++      const size_t size = children.size() + other->children.size() + 1;
++      children.reserve(size);
++      children.emplace(hash);
++      children.insert(other->children.begin(), other->children.end());
++    }
+   };
+-  std::map<vm::Cell::Hash, CellInfo> seen;
+-  CellStorageStat() : cells(0), bits(0), public_cells(0) {
+-  }
+-  explicit CellStorageStat(unsigned long long limit_cells)
+-      : cells(0), bits(0), public_cells(0), limit_cells(limit_cells) {
+-  }
+-  void clear_seen() {
+-    seen.clear();
++
++  static inline CacheInfo OVERFLOW_INFO{MAX_TOTAL_CELLS};
++  static inline absl::flat_hash_map<Cell::Hash, std::unique_ptr<CacheInfo>> cache{};
++
++  td::uint32 limit_cells;
++  td::uint32 limit_bits;
++  td::uint32 cells = 0;
++  td::uint32 bits = 0;
++  td::uint32 public_cells = 0;
++  absl::flat_hash_map<Cell::Hash, td::uint16> seen;
++
++  explicit CellStorageStat(
++    td::uint32 limit_cells = std::numeric_limits<td::uint32>::max(),
++    td::uint32 limit_bits = std::numeric_limits<td::uint32>::max(),
++    td::size_t capacity = 0
++  ) : limit_cells(limit_cells), limit_bits(limit_bits) {
++    seen.reserve(capacity);
+   }
++
+   void clear() {
+     cells = bits = public_cells = 0;
+     clear_limit();
+     clear_seen();
+   }
++  void clear_seen() {
++    seen.clear();
++  }
+   void clear_limit() {
+-    limit_cells = std::numeric_limits<unsigned long long>::max();
+-    limit_bits = std::numeric_limits<unsigned long long>::max();
++    limit_cells = std::numeric_limits<td::uint32>::max();
++    limit_bits = std::numeric_limits<td::uint32>::max();
+   }
+-  td::Result<CellInfo> compute_used_storage(Ref<vm::CellSlice> cs_ref, bool kill_dup = true,
+-                                            unsigned skip_count_root = 0);
+-  td::Result<CellInfo> compute_used_storage(const CellSlice& cs, bool kill_dup = true, unsigned skip_count_root = 0);
+-  td::Result<CellInfo> compute_used_storage(CellSlice&& cs, bool kill_dup = true, unsigned skip_count_root = 0);
+-  td::Result<CellInfo> compute_used_storage(Ref<vm::Cell> cell, bool kill_dup = true, unsigned skip_count_root = 0);
+-
+-  td::Result<CellInfo> add_used_storage(Ref<vm::CellSlice> cs_ref, bool kill_dup = true, unsigned skip_count_root = 0);
+-  td::Result<CellInfo> add_used_storage(const CellSlice& cs, bool kill_dup = true, unsigned skip_count_root = 0);
+-  td::Result<CellInfo> add_used_storage(CellSlice&& cs, bool kill_dup = true, unsigned skip_count_root = 0);
+-  td::Result<CellInfo> add_used_storage(Ref<vm::Cell> cell, bool kill_dup = true, unsigned skip_count_root = 0);
+-
+-  unsigned long long limit_cells = std::numeric_limits<unsigned long long>::max();
+-  unsigned long long limit_bits = std::numeric_limits<unsigned long long>::max();
++  static void clear_cache() {
++    cache.clear();
++  }
++
++  td::Result<td::uint32> compute_used_storage(Ref<CellSlice> cs_ref, bool kill_dup = true, unsigned skip_count_root = 0);
++  td::Result<td::uint32> compute_used_storage(const CellSlice& cs, bool kill_dup = true, unsigned skip_count_root = 0);
++  td::Result<td::uint32> compute_used_storage(CellSlice&& cs, bool kill_dup = true, unsigned skip_count_root = 0);
++  td::Result<td::uint32> compute_used_storage(Ref<Cell> cell, bool kill_dup = true, unsigned skip_count_root = 0);
++
++  td::Result<td::uint32> add_used_storage(Ref<CellSlice> cs_ref, bool kill_dup = true, unsigned skip_count_root = 0);
++  td::Result<td::uint32> add_used_storage(const CellSlice& cs, bool kill_dup = true, unsigned skip_count_root = 0);
++  td::Result<td::uint32> add_used_storage(CellSlice&& cs, bool kill_dup = true, unsigned skip_count_root = 0);
++  td::Result<td::uint32> add_used_storage(Ref<Cell> cell, bool kill_dup = true, unsigned skip_count_root = 0);
++
++  td::Result<td::uint16> add_used_storage_fast(Ref<CellSlice> cs, bool skip_root);
++  td::Result<td::uint16> add_used_storage_fast(const Ref<Cell>& root, bool use_cache);
++  td::Result<CacheInfo*> add_cell(const Ref<Cell>& cell, const Cell::Hash& hash);
++  td::Result<td::uint16> add_cell_no_cache(const Ref<Cell>& cell);
++  inline td::Result<bool> add_new_cell(const Ref<DataCell>& cell, CacheInfo* info);
++  inline void add_cached_cell(CacheInfo* info);
+ };
+ 
+ struct VmStorageStat {
+diff --git a/crypto/vm/cells/Cell.h b/crypto/vm/cells/Cell.h
+index a75371db..addddcef 100644
+--- a/crypto/vm/cells/Cell.h
++++ b/crypto/vm/cells/Cell.h
+@@ -81,6 +81,16 @@ class Cell : public CellTraits {
+ 
+   td::Status check_equals_unloaded(const Ref<Cell>& other) const;
+ 
++  virtual td::uint32 get_total_bits() const {
++      return 0;
++  }
++  virtual td::uint32 get_total_cells() const {
++    return 0;
++  }
++  virtual td::uint32 get_max_merkle_depth() const {
++    return 0;
++  }
++
+  private:
+   virtual td::uint16 do_get_depth(td::uint32 level) const = 0;
+   virtual const Hash do_get_hash(td::uint32 level) const = 0;
+diff --git a/crypto/vm/cells/CellHash.h b/crypto/vm/cells/CellHash.h
+index 9435675f..635bd602 100644
+--- a/crypto/vm/cells/CellHash.h
++++ b/crypto/vm/cells/CellHash.h
+@@ -91,6 +91,16 @@ struct hash<vm::CellHash> {
+ namespace vm {
+ template <class H>
+ H AbslHashValue(H h, const CellHash& cell_hash) {
+-  return H::combine(std::move(h), std::hash<vm::CellHash>()(cell_hash));
++  // default implementation:
++  //   return H::combine(std::move(h), std::hash<vm::CellHash>()(cell_hash));
++  // lets dive deeper in it:
++  // 1) cell_hash_slice_hash(s.as_slice())
++  // 2) hash.substr(8, 8)
++  // 3) td::as<size_t>
++  // so just do this:
++
++  auto& data = cell_hash.as_array();
++  auto key = *reinterpret_cast<const uint64_t*>(data.data() + 8);
++  return H::combine(std::move(h), key);
+ }
+ }  // namespace vm
+diff --git a/crypto/vm/cells/DataCell.cpp b/crypto/vm/cells/DataCell.cpp
+index 4dd30161..e48d88f7 100644
+--- a/crypto/vm/cells/DataCell.cpp
++++ b/crypto/vm/cells/DataCell.cpp
+@@ -24,6 +24,9 @@
+ 
+ #include "vm/cells/CellWithStorage.h"
+ 
++#include "td/utils/base64.h"
++#include "vm/boc.h"
++
+ namespace vm {
+ thread_local bool DataCell::use_arena = false;
+ 
+@@ -321,7 +324,16 @@ td::Result<Ref<DataCell>> DataCell::create(td::ConstBitPtr data, unsigned bits,
+     DCHECK(extracted_size == hash_bytes);
+   }
+ 
+-  return Ref<DataCell>(data_cell.release(), Ref<DataCell>::acquire_t{});
++  // calc total bits and cells
++  data_cell->init_totals();
++  for (int i = 0; i < info.refs_count_; i++) {
++    data_cell->add_totals(refs_ptr[i]);
++  }
++  if (data_cell->special_type() == CellTraits::SpecialType::MerkleProof ||
++      data_cell->special_type() == CellTraits::SpecialType::MerkleUpdate) {
++    ++data_cell->max_merkle_depth;
++  }
++  return Ref(data_cell.release(), Ref<DataCell>::acquire_t{});
+ }
+ 
+ const DataCell::Hash DataCell::do_get_hash(td::uint32 level) const {
+diff --git a/crypto/vm/cells/DataCell.h b/crypto/vm/cells/DataCell.h
+index 6d3c845f..9b98989b 100644
+--- a/crypto/vm/cells/DataCell.h
++++ b/crypto/vm/cells/DataCell.h
+@@ -117,6 +117,9 @@ class DataCell : public Cell {
+   };
+ 
+   Info info_;
++  td::uint32 total_bits = 0;
++  td::uint32 total_cells = 0;
++  td::uint32 max_merkle_depth = 0;
+   virtual char* get_storage() = 0;
+   virtual const char* get_storage() const = 0;
+   // TODO: we may also save three different pointers
+@@ -189,6 +192,24 @@ class DataCell : public Cell {
+   size_t get_storage_size() const {
+     return info_.get_storage_size();
+   }
++  void init_totals() {
++    total_bits = get_bits();
++    total_cells = 1;
++  }
++  void add_totals(const Cell* cell) {
++    total_bits += cell->get_total_bits();
++    total_cells += cell->get_total_cells();
++    max_merkle_depth = std::max(max_merkle_depth, cell->get_max_merkle_depth());
++  }
++  td::uint32 get_total_bits() const override {
++    return total_bits;
++  }
++  td::uint32 get_total_cells() const override {
++    return total_cells;
++  }
++  td::uint32 get_max_merkle_depth() const override {
++    return max_merkle_depth;
++  }
+   int serialize(unsigned char* buff, int buff_size, bool with_hashes = false) const;
+   std::string serialize() const;
+   std::string to_hex() const;
+@@ -228,4 +249,3 @@ inline CellHash as_cell_hash(const Ref<DataCell>& cell) {
+ }
+ 
+ }  // namespace vm
+-
+diff --git a/crypto/vm/cells/UsageCell.h b/crypto/vm/cells/UsageCell.h
+index 3e6e8898..73f4ce1c 100644
+--- a/crypto/vm/cells/UsageCell.h
++++ b/crypto/vm/cells/UsageCell.h
+@@ -80,6 +80,15 @@ class UsageCell : public Cell {
+   td::uint16 do_get_depth(td::uint32 level) const override {
+     return cell_->get_depth(level);
+   }
++  td::uint32 get_total_bits() const override {
++    return cell_->get_total_bits();
++  }
++  td::uint32 get_total_cells() const override {
++    return cell_->get_total_cells();
++  }
++  td::uint32 get_max_merkle_depth() const override {
++    return cell_->get_max_merkle_depth();
++  }
+ 
+  private:
+   Ref<Cell> cell_;
+diff --git a/validator/impl/validate-query.cpp b/validator/impl/validate-query.cpp
+index 2d1e95a5..776aca83 100644
+--- a/validator/impl/validate-query.cpp
++++ b/validator/impl/validate-query.cpp
+@@ -5278,8 +5278,9 @@ std::unique_ptr<block::Account> ValidateQuery::unpack_account(td::ConstBitPtr ad
+  *
+  * @returns True if the transaction is valid, false otherwise.
+  */
+-bool ValidateQuery::check_one_transaction(block::Account& account, ton::LogicalTime lt, Ref<vm::Cell> trans_root,
+-                                          bool is_first, bool is_last) {
++bool ValidateQuery::check_one_transaction(
++  block::Account& account, td::uint16 tx_count, LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first, bool is_last
++) {
+   if (!check_timeout()) {
+     return false;
+   }
+@@ -5722,7 +5723,7 @@ bool ValidateQuery::check_one_transaction(block::Account& account, ton::LogicalT
+     return reject_query(PSTRING() << "cannot re-create bounce phase of  transaction " << lt << " for smart contract "
+                                   << addr.to_hex());
+   }
+-  if (!trs->serialize()) {
++  if (!trs->serialize(tx_count)) {
+     return reject_query(PSTRING() << "cannot re-create the serialization of  transaction " << lt
+                                   << " for smart contract " << addr.to_hex());
+   }
+@@ -5837,16 +5838,20 @@ bool ValidateQuery::check_account_transactions(const StdSmcAddress& acc_addr, Re
+   vm::AugmentedDictionary trans_dict{vm::DictNonEmpty(), std::move(acc_blk.transactions), 64,
+                                      block::tlb::aug_AccountTransactions};
+   td::BitArray<64> min_trans, max_trans;
++  td::uint16 tx_count = 0;
++  for (const auto& _: trans_dict) {
++    tx_count++;
++  }
+   CHECK(trans_dict.get_minmax_key(min_trans).not_null() && trans_dict.get_minmax_key(max_trans, true).not_null());
+   ton::LogicalTime min_trans_lt = min_trans.to_ulong(), max_trans_lt = max_trans.to_ulong();
+-  if (!trans_dict.check_for_each_extra([this, &account, min_trans_lt, max_trans_lt](Ref<vm::CellSlice> value,
+-                                                                                    Ref<vm::CellSlice> extra,
+-                                                                                    td::ConstBitPtr key, int key_len) {
+-        CHECK(key_len == 64);
+-        ton::LogicalTime lt = key.get_uint(64);
+-        extra.clear();
+-        return check_one_transaction(account, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
+-      })) {
++  if (!trans_dict.check_for_each_extra([this, &account, tx_count, min_trans_lt, max_trans_lt](
++    Ref<vm::CellSlice> value, Ref<vm::CellSlice> extra, td::ConstBitPtr key, int key_len
++  ) {
++    CHECK(key_len == 64);
++    LogicalTime lt = key.get_uint(64);
++    extra.clear();
++    return check_one_transaction(account, tx_count, lt, value->prefetch_ref(), lt == min_trans_lt, lt == max_trans_lt);
++  })) {
+     return reject_query("at least one Transaction of account "s + acc_addr.to_hex() + " is invalid");
+   }
+   if (is_masterchain() && account.libraries_changed()) {
+diff --git a/validator/impl/validate-query.hpp b/validator/impl/validate-query.hpp
+index 05a397c8..052196cd 100644
+--- a/validator/impl/validate-query.hpp
++++ b/validator/impl/validate-query.hpp
+@@ -370,8 +370,9 @@ class ValidateQuery : public td::actor::Actor {
+   bool check_delivered_dequeued();
+   std::unique_ptr<block::Account> make_account_from(td::ConstBitPtr addr, Ref<vm::CellSlice> account);
+   std::unique_ptr<block::Account> unpack_account(td::ConstBitPtr addr);
+-  bool check_one_transaction(block::Account& account, LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first,
+-                             bool is_last);
++  bool check_one_transaction(
++    block::Account& account, td::uint16 tx_count, LogicalTime lt, Ref<vm::Cell> trans_root, bool is_first, bool is_last
++  );
+   bool check_account_transactions(const StdSmcAddress& acc_addr, Ref<vm::CellSlice> acc_tr);
+   bool check_transactions();
+   bool scan_account_libraries(Ref<vm::Cell> orig_libs, Ref<vm::Cell> final_libs, const td::Bits256& addr);
